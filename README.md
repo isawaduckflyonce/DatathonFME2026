@@ -163,12 +163,8 @@ adb forward tcp:8000 tcp:8000
 | Experiment / Mètode | Problemes avaluats | Encert (Accuracy) | Latència mitjana | Pitjor temps | Timeouts (> 60 s) |
 | --- | --- | --- | --- | --- | --- |
 | Atzar (5 opcions A–E) | — | 20,0% | 0,0 s | 0,0 s | 0 |
-| *Baseline* oficial (1 lletra, gramàtica `[A-E]`)
-
- | 40 (eng) | 22,5% | 8,7 s | 12,7 s | 0 |
-| *Baseline* 1 línia de raonament + lletra
-
- | 40 (eng) | 17,5% | 26,3 s | 35,0 s | 0 |
+| *Baseline* oficial (1 lletra, gramàtica `[A-E]`) | 40 (eng) | 22,5% | 8,7 s | 12,7 s | 0 |
+| *Baseline* 1 línia de raonament + lletra | 40 (eng) | 17,5% | 26,3 s | 35,0 s | 0 |
 | **El nostre copilot (CoT en anglès + `Result` + `Match`)** | **25 (eng + cat)** | **32,0% (8/25)** | **46,7 s** | **57,0 s** | **0** |
 
 * **Millora sobre el *baseline*:** Tot i ser una mostra parcial de 25 problemes (14 en anglès i 11 en català, barrejant tots els nivells de dificultat del 0 al 7), l'encert puja fins al **32,0%** (+9,5 punts percentuals respecte al 22,5% del *baseline* en anglès i +14,5 punts respecte al raonament d'una línia del repositori base), mantenint **0 timeouts** per sobre del límit de 60 segons.
