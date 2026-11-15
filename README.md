@@ -223,9 +223,12 @@ Durant el desenvolupament vam provar i descartar tres aproximacions abans d'arri
 3. **Permetre generació lliure en català sense restricció GBNF:**
 * Sense una gramàtica GBNF ASCII-only que forci l'inici en anglès, el model dedicava gran part dels tokens (a ~5,6 tokens/s) a repetir o traduir l'enunciat català, exhaurint el temps disponible sense arribar a cap conclusió.
 
-4. **Publicar a arduino project hub** Estem tenint problemes en l'altre plataforma, ja que no ens deixa avançar en la publicació. Intentarem avisar o actualitzar quan poguem fer-ho.
 
+---
 
+## Arduino project hub
+https://projecthub.arduino.cc/projects/5c9e5e1f-000b-4b8a-a63d-ac1d80d090d9
+(Pendent d'aprovar)
 
 ---
 
