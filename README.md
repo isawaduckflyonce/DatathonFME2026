@@ -2,6 +2,8 @@
 
 Aquest projecte implementa un **copilot matemàtic 100% offline** sobre la placa **Arduino UNO Q (4 GB)** per ajudar estudiants de primària i secundària a resoldre problemes de les proves Cangur ([M3Kang](https://huggingface.co/datasets/qualcomm/M3Kang)) sense que cap dada surti del dispositiu. El sistema combina **aprenentatge guiat** (escala de pistes de 4 nivells, detector de problemes "bessons" per practicar errors i feedback visual a la matriu LED de 8×13) amb **raonament automàtic** en anglès pas a pas dins el límit de 60 segons per problema.
 
+![demo](https://github.com/isawaduckflyonce/DatathonFME2026/blob/main/WhatsApp%20Image%202026-11-15%20at%2011.53.38.jpeg)
+
 ---
 
 ## Què fa el nostre copilot
