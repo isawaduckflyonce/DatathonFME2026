@@ -87,15 +87,13 @@ def build_messages(problem, examples=(), image_b64=None):
 
 
 def _compute_max_tokens(problem, examples, req_timeout, image_b64=None):
-    """Fit ~25-30 s of generation comfortably inside the remaining time budget."""
+    """Target ~20-25 s of generation on UNO Q (~5.6 tokens/s -> 115-140 tokens)."""
     prompt_chars = len(SYSTEM) + len(problem.get("text") or "")
     for ex in examples:
         prompt_chars += len(ex.get("text") or "") + 120
     est_prefill_s = (prompt_chars / 40.0) + (28.0 if image_b64 else 0.0)
-    avail_gen_s = max(14.0, req_timeout - est_prefill_s - 4.0)
-    # ~5.5 tokens/s generation on UNO Q; cap at 175 tokens (~30 s)
-    return max(110, min(175, int(avail_gen_s * 5.5)))
-
+    avail_gen_s = max(12.0, min(25.0, req_timeout - est_prefill_s - 4.0))
+    return max(115, min(140, int(avail_gen_s * 5.6)))
 
 def generate_cot(problem, examples=(), timeout=50.0, image_b64=None, url=URL):
     """Generate 2-5 English calculation steps, Result, option Match, and Answer: <A-E>.
