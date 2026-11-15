@@ -1,4 +1,4 @@
-"""Deterministic KV-cached plain-English CoT and calibrated classifier for Qwen3.5 0.8B."""
+"""Zero-shot English-prompted KV-cached CoT and calibrated classifier for Qwen3.5 0.8B."""
 import hashlib
 import math
 import re
@@ -7,48 +7,22 @@ from .client import post
 
 URL = f"http://127.0.0.1:{CONFIG['LLM_PORT']}/v1/chat/completions"
 
-# Empirical prior penalty to counter Qwen3.5-0.8B's heavy A/D bias when options are unseen pictures
+# Balances blind guesses only when options are unseen diagrams (options == {})
 LETTER_PRIOR_PENALTY = {"A": 0.85, "B": 0.0, "C": -0.05, "D": 0.25, "E": 0.0}
 
-SYSTEM_COT = (
-    "Solve the math competition problem in 2 to 4 concise plain-English calculation lines "
-    "(no markdown, no bold, no bullet points, no LaTeX, do not restate the problem), "
-    "then write Final: <exact result> and Answer: <A-E>."
-)
-SYSTEM = SYSTEM_COT
-
-# Cached once in llama-server's KV cache across all problems: primes terse English equations
-STATIC_EXAMPLE = [
-    {
-        "role": "user",
-        "content": (
-            "Un quadrat té perímetre 20 cm. Un triangle equilàter té el mateix costat que el quadrat. "
-            "Quin és el perímetre del triangle?\n"
-            "A) 10 cm\nB) 12 cm\nC) 15 cm\nD) 20 cm\nE) 25 cm"
-        ),
-    },
-    {
-        "role": "assistant",
-        "content": (
-            "Work:\n"
-            "Square perimeter = 20, so side = 20 / 4 = 5 cm.\n"
-            "Equilateral triangle has 3 sides of 5 cm, so perimeter = 3 * 5 = 15 cm.\n"
-            "Final: 15 cm\n"
-            "Answer: C"
-        ),
-    },
-]
-
-SYSTEM_DIRECT = (
-    "You solve Kangaroo math competition problems. "
-    "Pick the single most likely option letter A, B, C, D, or E."
+# Single English system prompt shared across all calls so llama-server keeps its KV cache warm
+SYSTEM = (
+    "You are an expert math competition solver. "
+    "Solve the given problem directly in 2 or 3 short plain-English calculation lines "
+    "(do not restate or translate the problem, no markdown, no LaTeX), "
+    "then output Final: <exact value> and Answer: <A-E>."
 )
 
-# Blocks '#', '*', '<', '>', '\', '$' so markdown, bullets, </think>, and LaTeX cannot appear
+# Max 3 lines * 75 chars (~60 tokens) + Final + Answer (~16 tokens) < max_tokens (110): never truncates
 GRAMMAR_COT = (
-    'root ::= "Work:\\n" line ("\\n" line){0,4} "\\nFinal: " val "\\nAnswer: " [A-E]\n'
-    'line ::= [^#*<>\\\\$\\n]{4,105}\n'
-    'val ::= [^\\n]{1,28}'
+    'root ::= "Work:\\n" line ("\\n" line){0,2} "\\nFinal: " val "\\nAnswer: " [A-E]\n'
+    'line ::= [^#*<>\\\\$\\n]{4,75}\n'
+    'val ::= [^\\n]{1,24}'
 )
 GRAMMAR_LETTER = "root ::= [A-E]"
 
@@ -64,8 +38,8 @@ def format_problem(problem, sees_image=False, include_answer_cue=False):
             lines.append(f"{letter}) {options[letter]}")
     if not options:
         lines.append(
-            "(The options are diagrams in a picture. Choose the best letter A-E.)"
-            if sees_image else "(The options are in the picture.)"
+            "(The options are diagrams in the image. Pick the best letter A-E.)"
+            if sees_image else "(The options are in an unseen diagram. Pick the best letter A-E.)"
         )
     if include_answer_cue:
         lines.append("Answer:")
@@ -73,13 +47,13 @@ def format_problem(problem, sees_image=False, include_answer_cue=False):
 
 
 def build_messages(problem, examples=(), image_b64=None):
-    """Build the CoT chat messages (compatible with explorer/server.py)."""
-    messages = [{"role": "system", "content": SYSTEM_COT}] + STATIC_EXAMPLE
+    """Build zero-shot English-instructed chat messages (compatible with explorer/server.py)."""
+    messages = [{"role": "system", "content": SYSTEM}]
 
     for ex in examples:
         ex_content = format_problem(ex, include_answer_cue=False)
         ex_val = ex.get("options", {}).get(ex["label"], ex["label"])
-        ex_reply = ex.get("solution") or f"Work:\nApply the given conditions.\nFinal: {ex_val}\nAnswer: {ex['label']}"
+        ex_reply = ex.get("solution") or f"Work:\nCompute from the given values.\nFinal: {ex_val}\nAnswer: {ex['label']}"
         messages.append({"role": "user", "content": ex_content})
         messages.append({"role": "assistant", "content": ex_reply})
 
@@ -96,13 +70,13 @@ def build_messages(problem, examples=(), image_b64=None):
 
 
 def generate_cot(problem, examples=(), timeout=50.0, image_b64=None, url=URL):
-    """Run deterministic KV-cached plain-English CoT: returns (raw_text, parsed_val, letter, timings)."""
+    """Run deterministic zero-shot CoT: returns (raw_text, parsed_val, letter, timings)."""
     messages = build_messages(problem, examples=examples, image_b64=image_b64)
 
     response = post(url, {
         "messages": messages,
         "grammar": GRAMMAR_COT,
-        "max_tokens": 115,
+        "max_tokens": 110,
         "temperature": 0,
         "seed": int(CONFIG["SEED"]),
         "cache_prompt": True,
@@ -118,7 +92,7 @@ def generate_cot(problem, examples=(), timeout=50.0, image_b64=None, url=URL):
 
 def answer_letter(problem, examples=(), timeout=20.0, image_b64=None, url=URL, debias=True):
     """Deterministic 1-token calibrated classifier for problems whose options are images."""
-    messages = [{"role": "system", "content": SYSTEM_DIRECT}]
+    messages = [{"role": "system", "content": SYSTEM}]
     for ex in examples:
         messages.append({"role": "user", "content": format_problem(ex, include_answer_cue=True)})
         messages.append({"role": "assistant", "content": ex["label"]})

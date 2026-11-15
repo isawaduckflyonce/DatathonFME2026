@@ -1,4 +1,5 @@
-"""Unified KV-cached Math Copilot: Symbolic Value-First CoT with deterministic option matching."""
+
+"""Deterministic KV-cached Math Copilot: Value-First CoT + Option Verification."""
 import os
 import socket
 import time
@@ -34,11 +35,11 @@ def _remaining(start, time_limit):
 
 def solve(problem, index=None, k=0, exclude_id=None, image_b64=None, llm_url=URL,
           time_limit=TIME_LIMIT):
-    """Solve one M3Kang problem within time_limit seconds."""
+    """Solve one M3Kang problem deterministically within time_limit seconds."""
     start = time.perf_counter()
     clean_prob = prepare_problem(problem)
     options = clean_prob.get("options") or {}
-    has_options = len(options) == 5
+    has_options = len(options) >= 2
 
     result = {
         "answer": FALLBACK,
@@ -54,7 +55,7 @@ def solve(problem, index=None, k=0, exclude_id=None, image_b64=None, llm_url=URL
         examples = []
         active_index = index if index is not None else (_get_default_index() if k > 0 else None)
         if active_index is not None and k > 0 and _remaining(start, time_limit) > 30.0:
-            hits = active_index.search(clean_prob, k=1, exclude_id=exclude_id, min_score=0.78)
+            hits = active_index.search(clean_prob, k=1, exclude_id=exclude_id, min_score=0.84)
             examples = [prepare_problem(p) for _score, p in hits]
             result["examples"] = hits
             result["retrieved"] = ";".join(f"{p['id']}:{s:.2f}" for s, p in hits)
@@ -67,10 +68,23 @@ def solve(problem, index=None, k=0, exclude_id=None, image_b64=None, llm_url=URL
             result["prompt_tokens"] += timings.get("prompt_n", 0)
             result["debug"] = raw_cot.replace("\n", " | ")
 
+            # 1. High-confidence path: calculated Final value matches one of the 5 options
             val_match = match_value_to_option(parsed_val, options)
             if val_match in {"A", "B", "C", "D", "E"}:
                 result["answer"] = val_match
                 result["method"] = "cot_value_match"
+                result["seconds"] = round(time.perf_counter() - start, 2)
+                return result
+
+            # 2. If Final missed all options, run a fast 1-token calibrated check if time allows
+            rem_after = _remaining(start, time_limit)
+            if rem_after >= 5.0:
+                cal_letter, t2 = answer_letter(
+                    clean_prob, examples=(), timeout=rem_after, image_b64=image_b64, url=llm_url, debias=True
+                )
+                result["prompt_tokens"] += t2.get("prompt_n", 0)
+                result["answer"] = cal_letter
+                result["method"] = "cot_miss_calibrated"
                 result["seconds"] = round(time.perf_counter() - start, 2)
                 return result
 
