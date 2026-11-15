@@ -133,7 +133,9 @@
     <section class="row">
       <button class="primary" id="next">Next problem</button>
       <button class="primary" id="recommended" disabled>Recommended level problem</button>
-      <span class="hint">Keys: <kbd>A</kbd>–<kbd>E</kbd> answer · <kbd>M</kbd> ask the model · <kbd>N</kbd> next · <kbd>R</kbd> random · <kbd>L</kbd> recommended level</span>
+      <button class="secondary" id="twin-btn" disabled>Practice mistake twin (0)</button>
+      <button class="secondary" id="clear-mistakes" style="display: none; padding: 8px 10px; font-size: 13px;" title="Clear saved mistakes">Clear</button>
+      <span class="hint">Keys: <kbd>A</kbd>–<kbd>E</kbd> answer · <kbd>M</kbd> ask · <kbd>N</kbd> next · <kbd>R</kbd> random · <kbd>L</kbd> recommended · <kbd>T</kbd> twin</span>
     </section>
   </div>
 </main>
@@ -157,9 +159,46 @@ const esc = s => String(s).replace(/[&<>"]/g, c => (
 ));
 
 const MAX_LEVEL = 7;
+const MISTAKE_STORAGE = "m3kang_mistakes_v1";
 let info, all = [], shown = [], current = null;
 let solved = false, attempts = 0, lastLabel = null;
+let activeTwinFor = null, twinCursor = 0;
 const results = {};  // key -> {me: bool, model: bool}
+
+function loadMistakes() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MISTAKE_STORAGE) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveMistakes(list) {
+  try {
+    localStorage.setItem(MISTAKE_STORAGE, JSON.stringify(list));
+  } catch (e) {}
+  updateTwinButton();
+}
+
+function addMistake(key) {
+  const list = loadMistakes().filter(k => k !== key);
+  list.push(key);
+  saveMistakes(list);
+}
+
+function removeMistake(key) {
+  const list = loadMistakes();
+  const nextList = list.filter(k => k !== key);
+  if (nextList.length !== list.length) saveMistakes(nextList);
+}
+
+function updateTwinButton() {
+  const n = loadMistakes().length;
+  $("twin-btn").textContent = `Practice mistake twin (${n})`;
+  $("twin-btn").disabled = n === 0;
+  $("clear-mistakes").style.display = n > 0 ? "" : "none";
+}
 
 function setPill(id, up, text) {
   const el = $(id);
@@ -198,8 +237,9 @@ function renderList() {
   }).join("");
 }
 
-async function open(key) {
+async function open(key, twinBanner) {
   resetHints();
+  activeTwinFor = twinBanner ? twinBanner.sourceKey : null;
   current = await api("/api/problem?key=" + encodeURIComponent(key));
   solved = false;
   attempts = 0;
@@ -207,8 +247,11 @@ async function open(key) {
   $("recommended").disabled = true;
   $("reveal-btn").style.display = "none";
   const yr = current.year ? " · " + current.year : "";
+  const twinTag = twinBanner
+    ? ` · Mistake twin for ${twinBanner.sourceId} (${Math.round(twinBanner.sim * 100)}% match)`
+    : "";
   $("meta").textContent =
-    `${current.id} · ${current.language} · level ${current.level}${yr}`;
+    `${current.id} · ${current.language} · level ${current.level}${yr}${twinTag}`;
   $("img").style.display = current.image ? "" : "none";
   if (current.image) {
     $("img").src = "/image/" + encodeURIComponent(current.key);
@@ -261,17 +304,29 @@ async function answer(letter) {
 
   attempts += 1;
   lastLabel = r.label;
+  let masteredTwin = false;
   if (attempts === 1) {
     (results[key] ||= {}).me = r.correct;
     $("recommended").disabled = false;
+    if (r.correct) {
+      removeMistake(key);
+      if (activeTwinFor) {
+        removeMistake(activeTwinFor);
+        masteredTwin = true;
+      }
+    } else {
+      addMistake(key);
+    }
     score();
     renderList();
   }
 
   if (r.correct) {
-    const msg = attempts === 1
-      ? "Correct!"
-      : `Correct on try ${attempts}!`;
+    const msg = masteredTwin
+      ? "Correct! Mistake twin mastered & cleared from bank."
+      : attempts === 1
+        ? "Correct!"
+        : `Correct on try ${attempts}!`;
     lockAllAnswers(r.label, msg, "verdict ok");
   } else {
     btn.disabled = true;
@@ -291,6 +346,57 @@ async function answer(letter) {
 function revealAnswer() {
   if (!current || solved || !lastLabel) return;
   lockAllAnswers(lastLabel, `Answer revealed: ${lastLabel}.`, "verdict");
+}
+
+async function practiceTwin() {
+  const mistakes = loadMistakes();
+  if (!mistakes.length) return;
+  $("twin-btn").disabled = true;
+  try {
+    const idx = twinCursor % mistakes.length;
+    twinCursor += 1;
+    const mistakeKey = mistakes[idx];
+    const exclude = Array.from(new Set([
+      ...Object.keys(results),
+      ...mistakes,
+      current ? current.key : ""
+    ].filter(Boolean)));
+
+    const res = await api("/api/twin", {
+      mistake_key: mistakeKey,
+      exclude_keys: exclude
+    });
+    const cand = all.find(p => p.key === res.key);
+    if (cand) {
+      if ($("f-lang").value && cand.language !== $("f-lang").value) {
+        $("f-lang").value = "";
+      }
+      if ($("f-level").value !== "" && String(cand.level) !== $("f-level").value) {
+        $("f-level").value = String(cand.level);
+      }
+      if ($("f-options").checked && !cand.options) {
+        $("f-options").checked = false;
+      }
+      renderList();
+    }
+    await open(res.key, {
+      sourceKey: mistakeKey,
+      sourceId: res.source_id,
+      sim: res.similarity
+    });
+  } catch (e) {
+    if (e.message && e.message.includes("unknown mistake key")) {
+      const m = loadMistakes();
+      if (m.length) {
+        removeMistake(m[(twinCursor - 1) % m.length]);
+        if (loadMistakes().length) return practiceTwin();
+      }
+    }
+    $("my-verdict").textContent = e.message;
+    $("my-verdict").className = "verdict bad";
+  } finally {
+    updateTwinButton();
+  }
 }
 
 async function ask() {
@@ -478,6 +584,8 @@ async function main() {
     $("f-level").insertAdjacentHTML("beforeend", `<option>${l}</option>`)
   );
   all = await api("/api/problems");
+  const validKeys = new Set(all.map(p => p.key));
+  saveMistakes(loadMistakes().filter(k => validKeys.has(k)));
   renderList();
   if (shown.length) open(shown[0].key);
 }
@@ -505,6 +613,8 @@ $("show-sim-answers").addEventListener("change", e => {
 $("ask").addEventListener("click", ask);
 $("next").addEventListener("click", () => next(false));
 $("recommended").addEventListener("click", nextRecommended);
+$("twin-btn").addEventListener("click", practiceTwin);
+$("clear-mistakes").addEventListener("click", () => saveMistakes([]));
 $("random").addEventListener("click", () => next(true));
 $("hint-btn").addEventListener("click", nextHint);
 
@@ -518,6 +628,7 @@ document.addEventListener("keydown", e => {
   else if (k === "N") next(false);
   else if (k === "R") next(true);
   else if (k === "L" && !$("recommended").disabled) nextRecommended();
+  else if (k === "T" && !$("twin-btn").disabled) practiceTwin();
   else if (k === "H") nextHint();
 });
 

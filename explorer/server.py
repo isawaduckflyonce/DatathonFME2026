@@ -10,9 +10,12 @@ port to your laptop (see the README). Standard library only.
 import argparse
 import base64
 import json
+import math
 import os
+import re
 import sys
 import urllib.error
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,6 +49,10 @@ def parse_args():
 
 def key_of(problem):
     return f"{problem['id']}_{problem['language']}"
+
+
+def tokens_of(text):
+    return re.findall(r"[a-zA-ZÀ-ÿ0-9]{3,}", (text or "").lower())
 
 
 def is_up(base):
@@ -94,6 +101,14 @@ class App:
         self.image_keys = set(self.by_key)
         if self.index:
             self.image_keys |= {row[0].replace("|", "_") for row in self.index.rows}
+
+        # Precompute token counts and IDF weights for fast mistake-twin matching
+        self.doc_tf = {key_of(p): Counter(tokens_of(p.get("text", ""))) for p in self.problems}
+        df = Counter()
+        for tf in self.doc_tf.values():
+            df.update(tf.keys())
+        n_docs = max(1, len(self.problems))
+        self.idf = {tok: math.log((n_docs + 1) / (cnt + 1)) + 1.0 for tok, cnt in df.items()}
 
     def info(self):
         return {
@@ -149,6 +164,70 @@ class App:
         hits = self.index.search(problem, k=k, exclude_id=problem["id"])
         return [{"score": round(s, 3), **public(p, self.images), "label": p["label"]} for s, p in hits]
 
+    def twin(self, mistake_key, exclude_keys):
+        source = self.by_key[mistake_key]
+        excluded = set(exclude_keys) | {mistake_key}
+
+        # Build concept vector from the missed problem + its embedding neighbors on the board
+        profile = Counter()
+        for tok, cnt in self.doc_tf[mistake_key].items():
+            profile[tok] += 3.0 * cnt * self.idf.get(tok, 1.0)
+
+        used_embeddings = False
+        if self.index:
+            try:
+                hits = self.index.search(source, k=5, exclude_id=source["id"])
+                used_embeddings = bool(hits)
+                for sim, nb in hits:
+                    for tok, cnt in Counter(tokens_of(nb.get("text", ""))).items():
+                        profile[tok] += max(0.0, sim) * cnt * self.idf.get(tok, 1.0)
+            except (OSError, urllib.error.URLError, ValueError):
+                pass
+
+        p_norm = math.sqrt(sum(v * v for v in profile.values())) or 1.0
+
+        def pick_best(pool):
+            best_score = -1e9
+            best_prob = None
+            best_sim = 0.0
+            for cand in pool:
+                ckey = key_of(cand)
+                ctf = self.doc_tf[ckey]
+                dot = 0.0
+                c_sq = 0.0
+                for tok, cnt in ctf.items():
+                    w = cnt * self.idf.get(tok, 1.0)
+                    c_sq += w * w
+                    if tok in profile:
+                        dot += w * profile[tok]
+                sim = dot / (p_norm * (math.sqrt(c_sq) or 1.0))
+
+                # Prefer same language and same difficulty level
+                lang_bonus = 0.5 if cand["language"] == source["language"] else 0.0
+                level_diff = abs(int(cand["level"]) - int(source["level"]))
+                level_penalty = 0.25 * level_diff
+                total = sim + lang_bonus - level_penalty
+                if total > best_score:
+                    best_score = total
+                    best_prob = cand
+                    best_sim = sim
+            return best_prob, best_sim
+
+        candidates = [p for p in self.problems if key_of(p) not in excluded]
+        if not candidates:
+            candidates = [p for p in self.problems if key_of(p) != mistake_key]
+        if not candidates:
+            return None
+
+        best, sim = pick_best(candidates)
+        return {
+            "key": key_of(best),
+            "similarity": round(sim, 2),
+            "source_id": source["id"],
+            "source_level": source["level"],
+            "used_embeddings": used_embeddings,
+        }
+
     def hint(self, key, rung):
         problem = self.by_key[key]
         if rung == 1:
@@ -169,6 +248,7 @@ class App:
         if rung == 4:
             return get_rung_4(problem, self.index)
         return {"error": f"Unknown rung {rung}"}
+
 
 def make_handler(app):
     class Handler(BaseHTTPRequestHandler):
@@ -205,7 +285,6 @@ def make_handler(app):
                     return self.send(200, app.hint(params["key"], rung))
                 except (OSError, urllib.error.URLError) as error:
                     return self.send(502, {"error": f"model server: {error}"})
-                return self.send(200, app.hint(params["key"], rung))
             if path.startswith("/image/"):
                 key = path[len("/image/"):]
                 # Only known keys reach the disk, so a request can't name any other file
@@ -217,6 +296,15 @@ def make_handler(app):
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            if self.path == "/api/twin":
+                mkey = body.get("mistake_key")
+                if mkey not in app.by_key:
+                    return self.send(404, {"error": "unknown mistake key"})
+                res = app.twin(mkey, body.get("exclude_keys") or [])
+                if not res:
+                    return self.send(404, {"error": "no twin available"})
+                return self.send(200, res)
+
             key = body.get("key")
             if key not in app.by_key:
                 return self.send(404, {"error": "unknown problem"})
