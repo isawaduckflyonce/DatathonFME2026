@@ -46,6 +46,7 @@
   .primary { padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
   .primary:disabled { opacity: .5; cursor: default; }
   .secondary { padding: 8px 16px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+  .secondary:disabled { opacity: .5; cursor: default; }
   table { border-collapse: collapse; margin-top: 10px; font-size: 14px; }
   td { padding: 3px 14px 3px 0; } td:first-child { color: var(--muted); }
   details { margin-top: 10px; } summary { cursor: pointer; color: var(--accent); }
@@ -118,39 +119,63 @@
 
     <section class="row">
       <button class="primary" id="next">Next problem</button>
-      <span class="hint">Keys: <kbd>A</kbd>–<kbd>E</kbd> answer · <kbd>M</kbd> ask the model · <kbd>N</kbd> next · <kbd>R</kbd> random</span>
+      <button class="primary" id="recommended" disabled>Recommended level problem</button>
+      <span class="hint">Keys: <kbd>A</kbd>–<kbd>E</kbd> answer · <kbd>M</kbd> ask the model · <kbd>N</kbd> next · <kbd>R</kbd> random · <kbd>L</kbd> recommended level</span>
     </section>
   </div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 const api = async (path, body) => {
-  const r = await fetch(path, body ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {});
+  const opts = body
+    ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}
+    : {};
+  const r = await fetch(path, opts);
   const data = await r.json();
   if (!r.ok) throw new Error(data.error || r.statusText);
   return data;
 };
-const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const esc = s => String(s).replace(/[&<>"]/g, c => (
+  {"&": "&", "<": "<", ">": ">", '"': '"'}[c]
+));
 
+const MAX_LEVEL = 7;
 let info, all = [], shown = [], current = null, myChoice = null;
 const results = {};  // key -> {me: bool, model: bool}
 
-function setPill(id, up, text) { const el = $(id); el.textContent = text; el.className = "pill " + (up ? "up" : "down"); }
+function setPill(id, up, text) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = "pill " + (up ? "up" : "down");
+}
 
 function score() {
   const v = Object.values(results);
-  const me = v.filter(r => "me" in r), model = v.filter(r => "model" in r);
-  $("score").textContent = `You ${me.filter(r => r.me).length}/${me.length} · Model ${model.filter(r => r.model).length}/${model.length}`;
+  const me = v.filter(r => "me" in r);
+  const model = v.filter(r => "model" in r);
+  const meOk = me.filter(r => r.me).length;
+  const modOk = model.filter(r => r.model).length;
+  $("score").textContent = `You ${meOk}/${me.length} · Model ${modOk}/${model.length}`;
 }
 
 function renderList() {
-  const lang = $("f-lang").value, level = $("f-level").value, opts = $("f-options").checked;
-  shown = all.filter(p => (!lang || p.language === lang) && (level === "" || String(p.level) === level) && (!opts || p.options));
+  const lang = $("f-lang").value;
+  const level = $("f-level").value;
+  const opts = $("f-options").checked;
+  shown = all.filter(p =>
+    (!lang || p.language === lang) &&
+    (level === "" || String(p.level) === level) &&
+    (!opts || p.options)
+  );
   $("list").innerHTML = shown.map(p => {
     const r = results[p.key] || {};
-    const mark = ("me" in r ? (r.me ? "✓" : "✗") : "") + ("model" in r ? (r.model ? " ✓" : " ✗") : "");
-    return `<div data-key="${esc(p.key)}" class="${current && p.key === current.key ? "on" : ""}">
-      <span>L${p.level} · ${esc(p.id.replace(/^lvl-\d_/, ""))} · ${esc(p.language)}</span><span class="mark">${mark}</span></div>`;
+    const meMark = "me" in r ? (r.me ? "✓" : "✗") : "";
+    const modMark = "model" in r ? (r.model ? " ✓" : " ✗") : "";
+    const cls = current && p.key === current.key ? "on" : "";
+    const shortId = esc(p.id.replace(/^lvl-\d_/, ""));
+    return `<div data-key="${esc(p.key)}" class="${cls}">` +
+      `<span>L${p.level} · ${shortId} · ${esc(p.language)}</span>` +
+      `<span class="mark">${meMark + modMark}</span></div>`;
   }).join("");
 }
 
@@ -158,17 +183,26 @@ async function open(key) {
   resetHints();
   current = await api("/api/problem?key=" + encodeURIComponent(key));
   myChoice = null;
-  $("meta").textContent = `${current.id} · ${current.language} · level ${current.level}${current.year ? " · " + current.year : ""}`;
+  $("recommended").disabled = true;
+  const yr = current.year ? " · " + current.year : "";
+  $("meta").textContent = `${current.id} · ${current.language} · level ${current.level}${yr}`;
   $("img").style.display = current.image ? "" : "none";
-  if (current.image) { $("img").src = "/image/" + encodeURIComponent(current.key); $("img").alt = "Problem " + current.id; }
+  if (current.image) {
+    $("img").src = "/image/" + encodeURIComponent(current.key);
+    $("img").alt = "Problem " + current.id;
+  }
   $("text").textContent = current.text;
   const o = current.options || {};
   $("ocr").innerHTML = Object.keys(o).length
-          ? "Options read by OCR (what the model sees): " + "ABCDE".split("").map(l => `<b>${l})</b> ${esc(o[l])}`).join("   ")
-          : "OCR couldn't read the options. Without the image, the model sees only the question.";
-  $("mine").innerHTML = "ABCDE".split("").map(l => `<button data-l="${l}">${l}</button>`).join("");
-  $("my-verdict").textContent = ""; $("my-verdict").className = "verdict";
-  $("model").innerHTML = ""; $("asking").textContent = "";
+    ? "Options read by OCR (what the model sees): " +
+      "ABCDE".split("").map(l => `<b>${l})</b> ${esc(o[l])}`).join("   ")
+    : "OCR couldn't read the options. Without the image, the model sees only the question.";
+  $("mine").innerHTML = "ABCDE".split("")
+    .map(l => `<button data-l="${l}">${l}</button>`).join("");
+  $("my-verdict").textContent = "";
+  $("my-verdict").className = "verdict";
+  $("model").innerHTML = "";
+  $("asking").textContent = "";
   resetHints();
   renderList();
   const row = document.querySelector(`#list div[data-key="${CSS.escape(key)}"]`);
@@ -186,63 +220,108 @@ async function answer(letter) {
     if (b.dataset.l === r.label) b.classList.add("right");
     else if (b.dataset.l === letter) b.classList.add("wrong");
   });
-  $("my-verdict").textContent = r.correct ? "Correct!" : `Not this time: the answer is ${r.label}.`;
+  $("my-verdict").textContent = r.correct
+    ? "Correct!"
+    : `Not this time: the answer is ${r.label}.`;
   $("my-verdict").className = "verdict " + (r.correct ? "ok" : "bad");
-  score(); renderList();
+  $("recommended").disabled = false;
+  score();
+  renderList();
 }
 
 async function ask() {
   if (!current) return;
   const key = current.key, start = Date.now();
   $("ask").disabled = true;
-  const tick = setInterval(() => $("asking").textContent = `Thinking… ${((Date.now() - start) / 1000).toFixed(0)} s`, 250);
+  const tick = setInterval(() => {
+    const s = ((Date.now() - start) / 1000).toFixed(0);
+    $("asking").textContent = `Thinking… ${s} s`;
+  }, 250);
   try {
-    const r = await api("/api/ask", {key, rag: +$("rag").value, vision: $("vision").checked});
+    const r = await api("/api/ask", {
+      key,
+      rag: +$("rag").value,
+      vision: $("vision").checked
+    });
     if (!current || current.key !== key) return;
     (results[key] ||= {}).model = r.correct;
     const limit = info.time_limit, over = r.seconds > limit;
-    document.querySelectorAll("#mine button").forEach(b => b.classList.toggle("model", b.dataset.l === r.answer));
+    document.querySelectorAll("#mine button").forEach(b =>
+      b.classList.toggle("model", b.dataset.l === r.answer)
+    );
+    const timeNote = over
+      ? `<b style="color:var(--bad)">over the ${limit} s limit</b>`
+      : `(limit ${limit} s)`;
+    const exRow = r.examples.length
+      ? `<tr><td>Examples used</td><td>` +
+        r.examples.map(e => `${esc(e.id)} (${e.score}, answer ${esc(e.label)})`).join(", ") +
+        `</td></tr>`
+      : "";
     $("model").innerHTML = `
-      <div class="verdict ${r.correct ? "ok" : "bad"}">The model says ${esc(r.answer)}: ${r.correct ? "correct" : "wrong, the answer is " + esc(r.label)}.</div>
+      <div class="verdict ${r.correct ? "ok" : "bad"}">
+        The model says ${esc(r.answer)}: ${r.correct ? "correct" : "wrong, the answer is " + esc(r.label)}.
+      </div>
       <table>
-        <tr><td>Time</td><td>${r.seconds} s ${over ? `<b style="color:var(--bad)">over the ${limit} s limit</b>` : `(limit ${limit} s)`}</td></tr>
+        <tr><td>Time</td><td>${r.seconds} s ${timeNote}</td></tr>
         <tr><td>Prompt tokens</td><td>${r.prompt_tokens}</td></tr>
         <tr><td>Status</td><td>${esc(r.status)}</td></tr>
-        ${r.examples.length ? `<tr><td>Examples used</td><td>${r.examples.map(e => `${esc(e.id)} (${e.score}, answer ${esc(e.label)})`).join(", ")}</td></tr>` : ""}
+        ${exRow}
       </table>
       <p class="hint">Next: ${nextStep(r)}</p>
       <details><summary>Prompt sent to the model</summary><pre>${esc(r.prompt)}</pre></details>`;
-    score(); renderList();
+    score();
+    renderList();
   } catch (e) {
     $("model").innerHTML = `<div class="verdict bad">${esc(e.message)}</div>`;
   } finally {
-    clearInterval(tick); $("asking").textContent = ""; $("ask").disabled = false;
+    clearInterval(tick);
+    $("asking").textContent = "";
+    $("ask").disabled = false;
   }
 }
 
 function nextStep(r) {
-  if (r.status !== "ok") return "the model ran out of time. Use fewer examples, or a shorter prompt in copilot/llm.py.";
-  if (r.seconds > info.time_limit) return "the answer came too late to count. Images are for exploring, not for the official run.";
-  if (!current.options || !Object.keys(current.options).length)
+  if (r.status !== "ok") {
+    return "the model ran out of time. Use fewer examples, or a shorter prompt in copilot/llm.py.";
+  }
+  if (r.seconds > info.time_limit) {
+    return "the answer came too late to count. Images are for exploring, not for the official run.";
+  }
+  if (!current.options || !Object.keys(current.options).length) {
     return "the options are only in the picture, so the model is guessing. Try sending the image, or skip these problems.";
-  if (!r.correct && !r.examples.length && info.index) return "try again with 1 to 3 solved examples (RAG) and compare.";
-  if (!r.correct) return "open the prompt below and ask yourself what the model is missing. Then change copilot/llm.py and measure with eval.py.";
+  }
+  if (!r.correct && !r.examples.length && info.index) {
+    return "try again with 1 to 3 solved examples (RAG) and compare.";
+  }
+  if (!r.correct) {
+    return "open the prompt below and ask yourself what the model is missing. Then change copilot/llm.py and measure with eval.py.";
+  }
   return "one right answer can be luck. Run eval.py on the whole validation set to see if a change really helps.";
 }
 
 async function loadSimilar() {
   $("similar").innerHTML = "";
-  if (!info.index) { $("sim-hint").textContent = "No retrieval index yet. Build it with: python3 build_index.py --only-with-options"; return; }
-  if (!info.embed) { $("sim-hint").textContent = "The embedding server is down (port 8082)."; return; }
+  if (!info.index) {
+    $("sim-hint").textContent = "No retrieval index yet. Build it with: python3 build_index.py --only-with-options";
+    return;
+  }
+  if (!info.embed) {
+    $("sim-hint").textContent = "The embedding server is down (port 8082).";
+    return;
+  }
   const key = current.key;
   $("sim-hint").textContent = "Searching…";
   const hits = await api(`/api/similar?key=${encodeURIComponent(key)}&k=3`);
   if (current.key !== key) return;
-  $("sim-hint").textContent = "The training problems whose embeddings are closest to this one. A score near 1 means very similar. With RAG, the model sees the top ones as solved examples.";
-  $("similar").innerHTML = hits.map(h => `
-    <div class="sim"><b>${h.score}</b> · ${esc(h.id)} · level ${h.level} · answer <b>${esc(h.label)}</b>
-      ${h.image ? `<img loading="lazy" src="/image/${encodeURIComponent(h.key)}" alt="Similar problem ${esc(h.id)}">` : `<div class="text">${esc(h.text)}</div>`}
-    </div>`).join("");
+  $("sim-hint").textContent =
+    "The training problems whose embeddings are closest to this one. " +
+    "A score near 1 means very similar. With RAG, the model sees the top ones as solved examples.";
+  $("similar").innerHTML = hits.map(h => {
+    const body = h.image
+      ? `<img loading="lazy" src="/image/${encodeURIComponent(h.key)}" alt="Similar problem ${esc(h.id)}">`
+      : `<div class="text">${esc(h.text)}</div>`;
+    return `<div class="sim"><b>${h.score}</b> · ${esc(h.id)} · level ${h.level} · answer <b>${esc(h.label)}</b>${body}</div>`;
+  }).join("");
 }
 
 function next(randomly) {
@@ -250,6 +329,48 @@ function next(randomly) {
   const i = shown.findIndex(p => current && p.key === current.key);
   const j = randomly ? Math.floor(Math.random() * shown.length) : (i + 1) % shown.length;
   open(shown[j].key);
+}
+
+function nextRecommended() {
+  if (!current || !myChoice || !(current.key in results) || !("me" in results[current.key])) return;
+  const curLevel = Number(current.level);
+  const wasCorrect = Boolean(results[current.key].me);
+  const targetLevel = wasCorrect ? Math.min(MAX_LEVEL, curLevel + 1) : curLevel;
+
+  if ($("f-level").value !== "" && $("f-level").value !== String(targetLevel)) {
+    $("f-level").value = String(targetLevel);
+    renderList();
+  }
+
+  const startIdx = Math.max(0, shown.findIndex(p => p.key === current.key));
+  let target = null;
+  for (let offset = 1; offset <= shown.length; offset++) {
+    const candidate = shown[(startIdx + offset) % shown.length];
+    if (Number(candidate.level) === targetLevel) {
+      target = candidate;
+      break;
+    }
+  }
+
+  if (!target) {
+    const allStart = Math.max(0, all.findIndex(p => p.key === current.key));
+    for (let offset = 1; offset <= all.length; offset++) {
+      const candidate = all[(allStart + offset) % all.length];
+      if (Number(candidate.level) === targetLevel) {
+        target = candidate;
+        if ($("f-lang").value && candidate.language !== $("f-lang").value) $("f-lang").value = "";
+        if ($("f-options").checked && !candidate.options) $("f-options").checked = false;
+        renderList();
+        break;
+      }
+    }
+  }
+
+  if (target) {
+    open(target.key);
+  } else {
+    next(false);
+  }
 }
 
 async function main() {
@@ -260,21 +381,30 @@ async function main() {
   $("s-data").textContent = `${info.count} problems · ${info.images} images · ${info.index} in index`;
   $("vision").disabled = !info.vision;
   $("rag").disabled = !info.index;
-  info.languages.forEach(l => $("f-lang").insertAdjacentHTML("beforeend", `<option>${esc(l)}</option>`));
-  info.levels.forEach(l => $("f-level").insertAdjacentHTML("beforeend", `<option>${l}</option>`));
+  info.languages.forEach(l =>
+    $("f-lang").insertAdjacentHTML("beforeend", `<option>${esc(l)}</option>`)
+  );
+  info.levels.forEach(l =>
+    $("f-level").insertAdjacentHTML("beforeend", `<option>${l}</option>`)
+  );
   all = await api("/api/problems");
   renderList();
   if (shown.length) open(shown[0].key);
 }
 
-$("list").addEventListener("click", e => { const d = e.target.closest("div[data-key]"); if (d) open(d.dataset.key); });
-$("mine").addEventListener("click", e => { if (e.target.dataset.l) answer(e.target.dataset.l); });
-["f-lang", "f-level", "f-options"].forEach(id => $(id).addEventListener("change", renderList));
+$("list").addEventListener("click", e => {
+  const d = e.target.closest("div[data-key]");
+  if (d) open(d.dataset.key);
+});
+$("mine").addEventListener("click", e => {
+  if (e.target.dataset.l) answer(e.target.dataset.l);
+});
+["f-lang", "f-level", "f-options"].forEach(id =>
+  $(id).addEventListener("change", renderList)
+);
 $("ask").addEventListener("click", ask);
 $("next").addEventListener("click", () => next(false));
-$("random").addEventListener("click", () => next(true));
-$("ask").addEventListener("click", ask);
-$("next").addEventListener("click", () => next(false));
+$("recommended").addEventListener("click", nextRecommended);
 $("random").addEventListener("click", () => next(true));
 $("hint-btn").addEventListener("click", nextHint);
 
@@ -285,6 +415,7 @@ document.addEventListener("keydown", e => {
   else if (k === "M") ask();
   else if (k === "N") next(false);
   else if (k === "R") next(true);
+  else if (k === "L" && !$("recommended").disabled) nextRecommended();
   else if (k === "H") nextHint();
 });
 
@@ -319,12 +450,13 @@ async function nextHint() {
   $("hint-btn").disabled = true;
   const start = Date.now();
   const tick = targetRung >= 3
-          ? setInterval(() => {
-            if (current && current.key === key) {
-              $("hint-status").textContent = `Generating rung ${targetRung}… ${((Date.now() - start) / 1000).toFixed(0)} s`;
-            }
-          }, 250)
-          : null;
+    ? setInterval(() => {
+        if (current && current.key === key) {
+          const s = ((Date.now() - start) / 1000).toFixed(0);
+          $("hint-status").textContent = `Generating rung ${targetRung}… ${s} s`;
+        }
+      }, 250)
+    : null;
   if (targetRung < 3) $("hint-status").textContent = "Loading hint…";
 
   try {
@@ -333,19 +465,24 @@ async function nextHint() {
 
     if (targetRung === 1) {
       if (h.error) {
-        $("hints-list").insertAdjacentHTML("beforeend", `
-          <div class="sim"><div class="hint"><b>Rung 1 — Skipped:</b> ${esc(h.error)}</div></div>`);
+        $("hints-list").insertAdjacentHTML("beforeend",
+          `<div class="sim"><div class="hint"><b>Rung 1 — Skipped:</b> ${esc(h.error)}</div></div>`
+        );
         $("hint-status").textContent = "No Rung 1 match — Rung 2 unlocked";
       } else {
         const ex = h.example;
         const opts = ex.options && Object.keys(ex.options).length
-                ? `<div class="ocr" style="margin-top:6px;">` +
-                "ABCDE".split("").map(l => `<b>${l})</b> ${esc(ex.options[l] || "")}`).join("   ") + `</div>`
-                : "";
+          ? `<div class="ocr" style="margin-top:6px;">` +
+            "ABCDE".split("").map(l => `<b>${l})</b> ${esc(ex.options[l] || "")}`).join("   ") +
+            `</div>`
+          : "";
+        const imgTag = ex.image
+          ? `<img loading="lazy" src="/image/${encodeURIComponent(ex.key)}" alt="Example ${esc(ex.id)}">`
+          : "";
         $("hints-list").insertAdjacentHTML("beforeend", `
           <div class="sim">
             <div><b>Rung 1 — Similar easier problem</b> · level ${ex.level} (current is level ${h.target_level}) · similarity <b>${h.score}</b></div>
-            ${ex.image ? `<img loading="lazy" src="/image/${encodeURIComponent(ex.key)}" alt="Example ${esc(ex.id)}">` : ""}
+            ${imgTag}
             <div class="text">${esc(ex.text)}</div>
             ${opts}
             <div style="margin-top:6px;">Solved answer: <b>${esc(ex.label)}</b></div>
@@ -358,11 +495,11 @@ async function nextHint() {
 
     } else if (targetRung === 2) {
       const sourceNote = h.neighbor_count > 0
-              ? `Shared clues across ${h.neighbor_count} neighbors`
-              : "Clues from problem text (embeddings offline)";
+        ? `Shared clues across ${h.neighbor_count} neighbors`
+        : "Clues from problem text (embeddings offline)";
       const kw = h.matched_keywords && h.matched_keywords.length
-              ? `<div class="hint" style="margin-top:4px;">${sourceNote}: ${h.matched_keywords.map(esc).join(", ")}</div>`
-              : "";
+        ? `<div class="hint" style="margin-top:4px;">${sourceNote}: ${h.matched_keywords.map(esc).join(", ")}</div>`
+        : "";
       $("hints-list").insertAdjacentHTML("beforeend", `
         <div class="sim">
           <div><b>Rung 2 — Topic & Method:</b> ${esc(h.topic)}</div>
@@ -372,12 +509,14 @@ async function nextHint() {
       hintRung = 2;
       $("hint-btn").textContent = "Get Hint 3: One-sentence AI hint";
       $("hint-btn").disabled = false;
-      $("hint-status").textContent = info.llm ? "Next rung uses Qwen3.5 (~6–10 s)" : "Warning: language model is down";
+      $("hint-status").textContent = info.llm
+        ? "Next rung uses Qwen3.5 (~6–10 s)"
+        : "Warning: language model is down";
 
     } else if (targetRung === 3) {
       const guardTag = h.leaked
-              ? "leak blocked — safe fallback shown"
-              : "verified leak-free";
+        ? "leak blocked — safe fallback shown"
+        : "verified leak-free";
       $("hints-list").insertAdjacentHTML("beforeend", `
         <div class="sim">
           <div><b>Rung 3 — AI Guiding Hint</b> · ${h.seconds} s · <span class="hint">${guardTag}</span></div>
@@ -402,7 +541,6 @@ async function nextHint() {
       $("hint-btn").disabled = true;
       $("hint-status").textContent = "Solution revealed";
 
-      // Lock self-answer buttons if the student hadn't guessed before revealing Rung 4
       if (!myChoice) {
         myChoice = h.label;
         document.querySelectorAll("#mine button").forEach(b => {
