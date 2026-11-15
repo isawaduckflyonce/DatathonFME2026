@@ -39,6 +39,7 @@
   .letters button:hover:not(:disabled) { border-color: var(--accent); }
   .letters button.right { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
   .letters button.wrong { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); }
+  .letters button.elim { text-decoration: line-through; opacity: .45; border-style: dashed; }
   .letters button.model { outline: 3px dashed var(--accent); outline-offset: 2px; }
   .verdict { font-weight: 600; min-height: 1.5em; }
   .verdict.ok { color: var(--ok); } .verdict.bad { color: var(--bad); }
@@ -86,9 +87,15 @@
     </section>
 
     <section>
-      <h2>1. Your answer</h2>
+      <div class="row" style="justify-content: space-between; margin-bottom: 6px;">
+        <h2 style="margin: 0;">1. Your answer</h2>
+        <span class="hint">Right-click an option to cross it out</span>
+      </div>
       <div class="letters" id="mine"></div>
-      <div class="verdict" id="my-verdict"></div>
+      <div class="row" style="margin-top: 6px;">
+        <div class="verdict" id="my-verdict"></div>
+        <button class="secondary" id="reveal-btn" style="display: none; padding: 4px 10px; font-size: 13px;">Reveal answer</button>
+      </div>
     </section>
 
     <section>
@@ -134,7 +141,11 @@
 const $ = id => document.getElementById(id);
 const api = async (path, body) => {
   const opts = body
-    ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}
+    ? {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+      }
     : {};
   const r = await fetch(path, opts);
   const data = await r.json();
@@ -146,7 +157,8 @@ const esc = s => String(s).replace(/[&<>"]/g, c => (
 ));
 
 const MAX_LEVEL = 7;
-let info, all = [], shown = [], current = null, myChoice = null;
+let info, all = [], shown = [], current = null;
+let solved = false, attempts = 0, lastLabel = null;
 const results = {};  // key -> {me: bool, model: bool}
 
 function setPill(id, up, text) {
@@ -161,7 +173,8 @@ function score() {
   const model = v.filter(r => "model" in r);
   const meOk = me.filter(r => r.me).length;
   const modOk = model.filter(r => r.model).length;
-  $("score").textContent = `You ${meOk}/${me.length} · Model ${modOk}/${model.length}`;
+  $("score").textContent =
+    `You ${meOk}/${me.length} · Model ${modOk}/${model.length}`;
 }
 
 function renderList() {
@@ -188,10 +201,14 @@ function renderList() {
 async function open(key) {
   resetHints();
   current = await api("/api/problem?key=" + encodeURIComponent(key));
-  myChoice = null;
+  solved = false;
+  attempts = 0;
+  lastLabel = null;
   $("recommended").disabled = true;
+  $("reveal-btn").style.display = "none";
   const yr = current.year ? " · " + current.year : "";
-  $("meta").textContent = `${current.id} · ${current.language} · level ${current.level}${yr}`;
+  $("meta").textContent =
+    `${current.id} · ${current.language} · level ${current.level}${yr}`;
   $("img").style.display = current.image ? "" : "none";
   if (current.image) {
     $("img").src = "/image/" + encodeURIComponent(current.key);
@@ -201,8 +218,10 @@ async function open(key) {
   const o = current.options || {};
   $("ocr").innerHTML = Object.keys(o).length
     ? "Options read by OCR (what the model sees): " +
-      "ABCDE".split("").map(l => `<b>${l})</b> ${esc(o[l])}`).join("   ")
-    : "OCR couldn't read the options. Without the image, the model sees only the question.";
+      "ABCDE".split("")
+        .map(l => `<b>${l})</b> ${esc(o[l])}`).join("   ")
+    : "OCR couldn't read the options. Without the image, " +
+      "the model sees only the question.";
   $("mine").innerHTML = "ABCDE".split("")
     .map(l => `<button data-l="${l}">${l}</button>`).join("");
   $("my-verdict").textContent = "";
@@ -211,28 +230,67 @@ async function open(key) {
   $("asking").textContent = "";
   resetHints();
   renderList();
-  const row = document.querySelector(`#list div[data-key="${CSS.escape(key)}"]`);
+  const row = document.querySelector(
+    `#list div[data-key="${CSS.escape(key)}"]`
+  );
   if (row) row.scrollIntoView({block: "nearest"});
   loadSimilar();
 }
 
-async function answer(letter) {
-  if (!current || myChoice) return;
-  myChoice = letter;
-  const r = await api("/api/check", {key: current.key, choice: letter});
-  (results[current.key] ||= {}).me = r.correct;
+function lockAllAnswers(correctLabel, verdictText, verdictClass) {
+  solved = true;
+  $("reveal-btn").style.display = "none";
   document.querySelectorAll("#mine button").forEach(b => {
     b.disabled = true;
-    if (b.dataset.l === r.label) b.classList.add("right");
-    else if (b.dataset.l === letter) b.classList.add("wrong");
+    b.classList.remove("elim");
+    if (b.dataset.l === correctLabel) b.classList.add("right");
   });
-  $("my-verdict").textContent = r.correct
-    ? "Correct!"
-    : `Not this time: the answer is ${r.label}.`;
-  $("my-verdict").className = "verdict " + (r.correct ? "ok" : "bad");
-  $("recommended").disabled = false;
-  score();
-  renderList();
+  $("my-verdict").textContent = verdictText;
+  $("my-verdict").className = verdictClass;
+}
+
+async function answer(letter) {
+  if (!current || solved) return;
+  const btn = document.querySelector(`#mine button[data-l="${letter}"]`);
+  if (!btn || btn.disabled) return;
+  btn.classList.remove("elim");
+
+  const key = current.key;
+  const r = await api("/api/check", {key, choice: letter});
+  if (!current || current.key !== key || solved) return;
+
+  attempts += 1;
+  lastLabel = r.label;
+  if (attempts === 1) {
+    (results[key] ||= {}).me = r.correct;
+    $("recommended").disabled = false;
+    score();
+    renderList();
+  }
+
+  if (r.correct) {
+    const msg = attempts === 1
+      ? "Correct!"
+      : `Correct on try ${attempts}!`;
+    lockAllAnswers(r.label, msg, "verdict ok");
+  } else {
+    btn.disabled = true;
+    btn.classList.add("wrong");
+    const left = document.querySelectorAll("#mine button:not(:disabled)");
+    if (!left.length) {
+      lockAllAnswers(r.label, `Answer: ${r.label}.`, "verdict bad");
+    } else {
+      $("reveal-btn").style.display = "";
+      $("my-verdict").textContent =
+        "Not quite — check a hint below, eliminate options, or try again.";
+      $("my-verdict").className = "verdict bad";
+    }
+  }
+}
+
+function revealAnswer() {
+  if (!current || solved || !lastLabel) return;
+  lockAllAnswers(lastLabel, `Answer revealed: ${lastLabel}.`, "verdict");
 }
 
 async function ask() {
@@ -258,14 +316,18 @@ async function ask() {
     const timeNote = over
       ? `<b style="color:var(--bad)">over the ${limit} s limit</b>`
       : `(limit ${limit} s)`;
+    const exText = r.examples
+      .map(e => `${esc(e.id)} (${e.score}, answer ${esc(e.label)})`)
+      .join(", ");
     const exRow = r.examples.length
-      ? `<tr><td>Examples used</td><td>` +
-        r.examples.map(e => `${esc(e.id)} (${e.score}, answer ${esc(e.label)})`).join(", ") +
-        `</td></tr>`
+      ? `<tr><td>Examples used</td><td>${exText}</td></tr>`
       : "";
+    const statusText = r.correct
+      ? "correct"
+      : "wrong, the answer is " + esc(r.label);
     $("model").innerHTML = `
       <div class="verdict ${r.correct ? "ok" : "bad"}">
-        The model says ${esc(r.answer)}: ${r.correct ? "correct" : "wrong, the answer is " + esc(r.label)}.
+        The model says ${esc(r.answer)}: ${statusText}.
       </div>
       <table>
         <tr><td>Time</td><td>${r.seconds} s ${timeNote}</td></tr>
@@ -274,11 +336,13 @@ async function ask() {
         ${exRow}
       </table>
       <p class="hint">Next: ${nextStep(r)}</p>
-      <details><summary>Prompt sent to the model</summary><pre>${esc(r.prompt)}</pre></details>`;
+      <details><summary>Prompt sent to the model</summary>` +
+      `<pre>${esc(r.prompt)}</pre></details>`;
     score();
     renderList();
   } catch (e) {
-    $("model").innerHTML = `<div class="verdict bad">${esc(e.message)}</div>`;
+    $("model").innerHTML =
+      `<div class="verdict bad">${esc(e.message)}</div>`;
   } finally {
     clearInterval(tick);
     $("asking").textContent = "";
@@ -288,27 +352,34 @@ async function ask() {
 
 function nextStep(r) {
   if (r.status !== "ok") {
-    return "the model ran out of time. Use fewer examples, or a shorter prompt in copilot/llm.py.";
+    return "the model ran out of time. Use fewer examples, " +
+      "or a shorter prompt in copilot/llm.py.";
   }
   if (r.seconds > info.time_limit) {
-    return "the answer came too late to count. Images are for exploring, not for the official run.";
+    return "the answer came too late to count. " +
+      "Images are for exploring, not for the official run.";
   }
   if (!current.options || !Object.keys(current.options).length) {
-    return "the options are only in the picture, so the model is guessing. Try sending the image, or skip these problems.";
+    return "the options are only in the picture, so the model is guessing. " +
+      "Try sending the image, or skip these problems.";
   }
   if (!r.correct && !r.examples.length && info.index) {
     return "try again with 1 to 3 solved examples (RAG) and compare.";
   }
   if (!r.correct) {
-    return "open the prompt below and ask yourself what the model is missing. Then change copilot/llm.py and measure with eval.py.";
+    return "open the prompt below and ask yourself what the model is missing. " +
+      "Then change copilot/llm.py and measure with eval.py.";
   }
-  return "one right answer can be luck. Run eval.py on the whole validation set to see if a change really helps.";
+  return "one right answer can be luck. Run eval.py on the whole " +
+    "validation set to see if a change really helps.";
 }
 
 async function loadSimilar() {
   $("similar").innerHTML = "";
   if (!info.index) {
-    $("sim-hint").textContent = "No retrieval index yet. Build it with: python3 build_index.py --only-with-options";
+    $("sim-hint").textContent =
+      "No retrieval index yet. Build it with: " +
+      "python3 build_index.py --only-with-options";
     return;
   }
   if (!info.embed) {
@@ -321,28 +392,35 @@ async function loadSimilar() {
   if (current.key !== key) return;
   $("sim-hint").textContent =
     "The training problems whose embeddings are closest to this one. " +
-    "A score near 1 means very similar. With RAG, the model sees the top ones as solved examples.";
+    "A score near 1 means very similar. " +
+    "With RAG, the model sees the top ones as solved examples.";
   $("similar").innerHTML = hits.map(h => {
+    const imgSrc = "/image/" + encodeURIComponent(h.key);
     const body = h.image
-      ? `<img loading="lazy" src="/image/${encodeURIComponent(h.key)}" alt="Similar problem ${esc(h.id)}">`
+      ? `<img loading="lazy" src="${imgSrc}" alt="Similar ${esc(h.id)}">`
       : `<div class="text">${esc(h.text)}</div>`;
-    const ans = `<span class="sim-answer"> · answer <b>${esc(h.label)}</b></span>`;
-    return `<div class="sim"><b>${h.score}</b> · ${esc(h.id)} · level ${h.level}${ans}${body}</div>`;
+    const ans =
+      `<span class="sim-answer"> · answer <b>${esc(h.label)}</b></span>`;
+    return `<div class="sim"><b>${h.score}</b> · ${esc(h.id)} ` +
+      `· level ${h.level}${ans}${body}</div>`;
   }).join("");
 }
 
 function next(randomly) {
   if (!shown.length) return;
   const i = shown.findIndex(p => current && p.key === current.key);
-  const j = randomly ? Math.floor(Math.random() * shown.length) : (i + 1) % shown.length;
+  const j = randomly
+    ? Math.floor(Math.random() * shown.length)
+    : (i + 1) % shown.length;
   open(shown[j].key);
 }
 
 function nextRecommended() {
-  if (!current || !myChoice || !(current.key in results) || !("me" in results[current.key])) return;
+  if (!current || attempts === 0) return;
+  const r = results[current.key];
+  if (!r || !("me" in r)) return;
   const curLevel = Number(current.level);
-  const wasCorrect = Boolean(results[current.key].me);
-  const targetLevel = wasCorrect ? Math.min(MAX_LEVEL, curLevel + 1) : curLevel;
+  const targetLevel = r.me ? Math.min(MAX_LEVEL, curLevel + 1) : curLevel;
 
   if ($("f-level").value !== "" && $("f-level").value !== String(targetLevel)) {
     $("f-level").value = String(targetLevel);
@@ -365,8 +443,12 @@ function nextRecommended() {
       const candidate = all[(allStart + offset) % all.length];
       if (Number(candidate.level) === targetLevel) {
         target = candidate;
-        if ($("f-lang").value && candidate.language !== $("f-lang").value) $("f-lang").value = "";
-        if ($("f-options").checked && !candidate.options) $("f-options").checked = false;
+        if ($("f-lang").value && candidate.language !== $("f-lang").value) {
+          $("f-lang").value = "";
+        }
+        if ($("f-options").checked && !candidate.options) {
+          $("f-options").checked = false;
+        }
         renderList();
         break;
       }
@@ -385,7 +467,8 @@ async function main() {
   setPill("s-llm", info.llm, "language model " + (info.llm ? "up" : "down"));
   setPill("s-embed", info.embed, "embeddings " + (info.embed ? "up" : "down"));
   setPill("s-vision", info.vision, "vision " + (info.vision ? "up" : "off"));
-  $("s-data").textContent = `${info.count} problems · ${info.images} images · ${info.index} in index`;
+  $("s-data").textContent =
+    `${info.count} problems · ${info.images} images · ${info.index} in index`;
   $("vision").disabled = !info.vision;
   $("rag").disabled = !info.index;
   info.languages.forEach(l =>
@@ -406,6 +489,13 @@ $("list").addEventListener("click", e => {
 $("mine").addEventListener("click", e => {
   if (e.target.dataset.l) answer(e.target.dataset.l);
 });
+$("mine").addEventListener("contextmenu", e => {
+  const btn = e.target.closest("button[data-l]");
+  if (!btn || btn.disabled || solved) return;
+  e.preventDefault();
+  btn.classList.toggle("elim");
+});
+$("reveal-btn").addEventListener("click", revealAnswer);
 ["f-lang", "f-level", "f-options"].forEach(id =>
   $(id).addEventListener("change", renderList)
 );
@@ -419,7 +509,9 @@ $("random").addEventListener("click", () => next(true));
 $("hint-btn").addEventListener("click", nextHint);
 
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) {
+    return;
+  }
   const k = e.key.toUpperCase();
   if ("ABCDE".includes(k) && k.length === 1) answer(k);
   else if (k === "M") ask();
@@ -453,7 +545,8 @@ async function nextHint() {
     $("hint-btn").textContent = "Confirm: reveal full solution & answer";
     $("hint-btn").style.borderColor = "var(--bad)";
     $("hint-btn").style.color = "var(--bad)";
-    $("hint-status").textContent = "Click again to confirm you want the answer revealed";
+    $("hint-status").textContent =
+      "Click again to confirm you want the answer revealed";
     return;
   }
 
@@ -470,28 +563,34 @@ async function nextHint() {
   if (targetRung < 3) $("hint-status").textContent = "Loading hint…";
 
   try {
-    const h = await api(`/api/hint?key=${encodeURIComponent(key)}&rung=${targetRung}`);
+    const url = `/api/hint?key=${encodeURIComponent(key)}&rung=${targetRung}`;
+    const h = await api(url);
     if (!current || current.key !== key) return;
 
     if (targetRung === 1) {
       if (h.error) {
         $("hints-list").insertAdjacentHTML("beforeend",
-          `<div class="sim"><div class="hint"><b>Rung 1 — Skipped:</b> ${esc(h.error)}</div></div>`
+          `<div class="sim"><div class="hint">` +
+          `<b>Rung 1 — Skipped:</b> ${esc(h.error)}</div></div>`
         );
         $("hint-status").textContent = "No Rung 1 match — Rung 2 unlocked";
       } else {
         const ex = h.example;
         const opts = ex.options && Object.keys(ex.options).length
           ? `<div class="ocr" style="margin-top:6px;">` +
-            "ABCDE".split("").map(l => `<b>${l})</b> ${esc(ex.options[l] || "")}`).join("   ") +
+            "ABCDE".split("")
+              .map(l => `<b>${l})</b> ${esc(ex.options[l] || "")}`)
+              .join("   ") +
             `</div>`
           : "";
+        const imgSrc = "/image/" + encodeURIComponent(ex.key);
         const imgTag = ex.image
-          ? `<img loading="lazy" src="/image/${encodeURIComponent(ex.key)}" alt="Example ${esc(ex.id)}">`
+          ? `<img loading="lazy" src="${imgSrc}" alt="Example ${esc(ex.id)}">`
           : "";
         $("hints-list").insertAdjacentHTML("beforeend", `
           <div class="sim">
-            <div><b>Rung 1 — Similar easier problem</b> · level ${ex.level} (current is level ${h.target_level}) · similarity <b>${h.score}</b></div>
+            <div><b>Rung 1 — Similar easier problem</b> · level ${ex.level} ` +
+            `(current is level ${h.target_level}) · similarity <b>${h.score}</b></div>
             ${imgTag}
             <div class="text">${esc(ex.text)}</div>
             ${opts}
@@ -507,8 +606,9 @@ async function nextHint() {
       const sourceNote = h.neighbor_count > 0
         ? `Shared clues across ${h.neighbor_count} neighbors`
         : "Clues from problem text (embeddings offline)";
-      const kw = h.matched_keywords && h.matched_keywords.length
-        ? `<div class="hint" style="margin-top:4px;">${sourceNote}: ${h.matched_keywords.map(esc).join(", ")}</div>`
+      const kwList = (h.matched_keywords || []).map(esc).join(", ");
+      const kw = kwList
+        ? `<div class="hint" style="margin-top:4px;">${sourceNote}: ${kwList}</div>`
         : "";
       $("hints-list").insertAdjacentHTML("beforeend", `
         <div class="sim">
@@ -529,7 +629,8 @@ async function nextHint() {
         : "verified leak-free";
       $("hints-list").insertAdjacentHTML("beforeend", `
         <div class="sim">
-          <div><b>Rung 3 — AI Guiding Hint</b> · ${h.seconds} s · <span class="hint">${guardTag}</span></div>
+          <div><b>Rung 3 — AI Guiding Hint</b> · ${h.seconds} s · ` +
+          `<span class="hint">${guardTag}</span></div>
           <div style="margin-top:6px;">${esc(h.hint)}</div>
         </div>`);
       hintRung = 3;
@@ -538,10 +639,13 @@ async function nextHint() {
       $("hint-status").textContent = "Rung 3 unlocked";
 
     } else if (targetRung === 4) {
-      const ansText = h.option_value ? `${h.label}) ${h.option_value}` : h.label;
+      const ansText = h.option_value
+        ? `${h.label}) ${h.option_value}`
+        : h.label;
       $("hints-list").insertAdjacentHTML("beforeend", `
         <div class="sim" style="border-color: var(--ok); background: var(--ok-bg);">
-          <div><b>Rung 4 — Solution:</b> Answer is <b>${esc(ansText)}</b> <span class="hint">(${h.seconds} s)</span></div>
+          <div><b>Rung 4 — Solution:</b> Answer is <b>${esc(ansText)}</b> ` +
+          `<span class="hint">(${h.seconds} s)</span></div>
           <div class="text" style="margin-bottom:0;">${esc(h.explanation)}</div>
         </div>`);
       hintRung = 4;
@@ -551,14 +655,8 @@ async function nextHint() {
       $("hint-btn").disabled = true;
       $("hint-status").textContent = "Solution revealed";
 
-      if (!myChoice) {
-        myChoice = h.label;
-        document.querySelectorAll("#mine button").forEach(b => {
-          b.disabled = true;
-          if (b.dataset.l === h.label) b.classList.add("right");
-        });
-        $("my-verdict").textContent = `Solution revealed: ${h.label}.`;
-        $("my-verdict").className = "verdict";
+      if (!solved) {
+        lockAllAnswers(h.label, `Solution revealed: ${h.label}.`, "verdict");
       }
     }
   } catch (e) {
