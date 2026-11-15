@@ -52,6 +52,7 @@
   details { margin-top: 10px; } summary { cursor: pointer; color: var(--accent); }
   pre { white-space: pre-wrap; background: var(--bg); padding: 10px; border-radius: 6px; font-size: 12px; max-height: 360px; overflow: auto; }
   .similar { display: grid; gap: 12px; }
+  #similar:not(.show-answers) .sim-answer { display: none; }
   .sim { border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
   .sim img { max-width: 100%; max-height: 160px; display: block; margin-top: 6px; }
   .hint { color: var(--muted); font-size: 13px; }
@@ -112,7 +113,12 @@
     </section>
 
     <section>
-      <h2>3. Similar solved problems (embeddings)</h2>
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+        <h2 style="margin: 0;">3. Similar solved problems (embeddings)</h2>
+        <label class="hint" style="display: flex; gap: 6px; align-items: center; cursor: pointer;">
+          <input type="checkbox" id="show-sim-answers"> Show answers
+        </label>
+      </div>
       <div class="hint" id="sim-hint"></div>
       <div class="similar" id="similar"></div>
     </section>
@@ -320,7 +326,8 @@ async function loadSimilar() {
     const body = h.image
       ? `<img loading="lazy" src="/image/${encodeURIComponent(h.key)}" alt="Similar problem ${esc(h.id)}">`
       : `<div class="text">${esc(h.text)}</div>`;
-    return `<div class="sim"><b>${h.score}</b> · ${esc(h.id)} · level ${h.level} · answer <b>${esc(h.label)}</b>${body}</div>`;
+    const ans = `<span class="sim-answer"> · answer <b>${esc(h.label)}</b></span>`;
+    return `<div class="sim"><b>${h.score}</b> · ${esc(h.id)} · level ${h.level}${ans}${body}</div>`;
   }).join("");
 }
 
@@ -402,6 +409,9 @@ $("mine").addEventListener("click", e => {
 ["f-lang", "f-level", "f-options"].forEach(id =>
   $(id).addEventListener("change", renderList)
 );
+$("show-sim-answers").addEventListener("change", e => {
+  $("similar").classList.toggle("show-answers", e.target.checked);
+});
 $("ask").addEventListener("click", ask);
 $("next").addEventListener("click", () => next(false));
 $("recommended").addEventListener("click", nextRecommended);
